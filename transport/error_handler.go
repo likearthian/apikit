@@ -3,7 +3,7 @@ package transport
 import (
 	"context"
 
-	log "github.com/sirupsen/logrus"
+	log "github.com/likearthian/apikit/logger"
 )
 
 // ErrorHandler receives a transport error to be processed for diagnostic purposes.
@@ -14,17 +14,17 @@ type ErrorHandler interface {
 
 // LogErrorHandler is a transport error handler implementation which logs an error.
 type LogErrorHandler struct {
-	logger *log.Logger
+	logger log.Logger
 }
 
-func NewLogErrorHandler(logger *log.Logger) *LogErrorHandler {
+func NewLogErrorHandler(logger log.Logger) *LogErrorHandler {
 	return &LogErrorHandler{
 		logger: logger,
 	}
 }
 
 func (h *LogErrorHandler) Handle(ctx context.Context, err error) {
-	h.logger.Error(err)
+	h.logger.Error("an error has occured", "error", err.Error())
 }
 
 // The ErrorHandlerFunc type is an adapter to allow the use of

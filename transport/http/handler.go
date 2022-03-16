@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	"github.com/likearthian/apikit/endpoint"
+	log "github.com/likearthian/apikit/logger"
 	"github.com/likearthian/apikit/transport"
-	log "github.com/sirupsen/logrus"
 )
 
 type handlerOptions struct {
@@ -19,7 +19,7 @@ type handlerOptions struct {
 }
 
 // Server wraps an endpoint and implements http.Handler.
-type Handler[I any, O any] struct {
+type Handler[I comparable, O comparable] struct {
 	e       endpoint.Endpoint[I, O]
 	dec     DecodeRequestFunc[I]
 	enc     EncodeResponseFunc[O]
@@ -33,11 +33,11 @@ type Handler[I any, O any] struct {
 
 // NewHandler constructs a new server, which implements http.Handler and wraps
 // the provided endpoint.
-func NewHandler[I any, O any](
+func NewHandler[I comparable, O comparable](
 	e endpoint.Endpoint[I, O],
 	dec DecodeRequestFunc[I],
 	enc EncodeResponseFunc[O],
-	options ...HandlerOption[I, O],
+	options ...HandlerOption,
 ) *Handler[I, O] {
 	s := &Handler[I, O]{
 		e:   e,
@@ -49,7 +49,7 @@ func NewHandler[I any, O any](
 
 	opt := &handlerOptions{
 		errorEncoder: DefaultErrorEncoder,
-		errorHandler: transport.NewLogErrorHandler(log.StandardLogger()),
+		errorHandler: transport.NewLogErrorHandler(log.NewStandardLogger()),
 	}
 
 	for _, option := range options {
@@ -89,7 +89,7 @@ func HandlerServerErrorEncoder(ee ErrorEncoder) HandlerOption {
 // custom HandlerServerErrorEncoder or ServerFinalizer, both of which have access to
 // the context.
 // Deprecated: Use ServerErrorHandler instead.
-func HandlerErrorLogger(logger *log.Logger) HandlerOption {
+func HandlerErrorLogger(logger log.Logger) HandlerOption {
 	return func(s *handlerOptions) { s.errorHandler = transport.NewLogErrorHandler(logger) }
 }
 

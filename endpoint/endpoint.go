@@ -6,19 +6,19 @@ import (
 
 // Endpoint is the fundamental building block of servers and clients.
 // It represents a single RPC method.
-type Endpoint[I any, O any] func(ctx context.Context, request I) (response O, err error)
+type Endpoint[I comparable, O comparable] func(ctx context.Context, request I) (response O, err error)
 
 // Nop is an endpoint that does nothing and returns a nil error.
 // Useful for tests.
 func Nop(context.Context, interface{}) (interface{}, error) { return struct{}{}, nil }
 
 // Middleware is a chainable behavior modifier for endpoints.
-type Middleware[I any, O any] func(Endpoint[I, O]) Endpoint[I, O]
+type Middleware[I comparable, O comparable] func(Endpoint[I, O]) Endpoint[I, O]
 
 // Chain is a helper function for composing middlewares. Requests will
 // traverse them in the order they're declared. That is, the first middleware
 // is treated as the outermost middleware.
-func Chain[I any, O any](outer Middleware[I, O], others ...Middleware[I, O]) Middleware[I, O] {
+func Chain[I comparable, O comparable](outer Middleware[I, O], others ...Middleware[I, O]) Middleware[I, O] {
 	return func(next Endpoint[I, O]) Endpoint[I, O] {
 		for i := len(others) - 1; i >= 0; i-- { // reverse
 			next = others[i](next)
