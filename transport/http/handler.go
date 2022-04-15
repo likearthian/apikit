@@ -19,7 +19,7 @@ type handlerOptions struct {
 }
 
 // Server wraps an endpoint and implements http.Handler.
-type Handler[I comparable, O comparable] struct {
+type Handler[I any, O any] struct {
 	e       endpoint.Endpoint[I, O]
 	dec     DecodeRequestFunc[I]
 	enc     EncodeResponseFunc[O]
@@ -33,7 +33,7 @@ type Handler[I comparable, O comparable] struct {
 
 // NewHandler constructs a new server, which implements http.Handler and wraps
 // the provided endpoint.
-func NewHandler[I comparable, O comparable](
+func NewHandler[I any, O any](
 	e endpoint.Endpoint[I, O],
 	dec DecodeRequestFunc[I],
 	enc EncodeResponseFunc[O],
