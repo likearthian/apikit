@@ -24,7 +24,7 @@ func NewLogErrorHandler(logger log.Logger) *LogErrorHandler {
 }
 
 func (h *LogErrorHandler) Handle(ctx context.Context, err error) {
-	h.logger.Error("an error has occured", "error", err.Error())
+	h.logger.Error("error", "err", err)
 }
 
 // The ErrorHandlerFunc type is an adapter to allow the use of

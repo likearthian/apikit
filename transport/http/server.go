@@ -5,152 +5,79 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/likearthian/apikit/endpoint"
-	log "github.com/likearthian/apikit/logger"
-	"github.com/likearthian/apikit/transport"
+	"github.com/go-kit/kit/endpoint"
+	httptransport "github.com/go-kit/kit/transport/http"
+	trxkit "github.com/likearthian/apikit/transport"
 )
 
-type handlerOptions struct {
-	before       []RequestFunc
-	after        []ServerResponseFunc
-	errorEncoder ErrorEncoder
-	errorHandler transport.ErrorHandler
-	finalizer    []ServerFinalizerFunc
+type ServerOption func(server *httptransport.Server)
+
+func NewServer(
+	e endpoint.Endpoint,
+	dec DecodeRequestFunc,
+	enc EncodeResponseFunc,
+	options ...ServerOption,
+) *httptransport.Server {
+	var ops []httptransport.ServerOption
+	for _, val := range options {
+		ops = append(ops, httptransport.ServerOption(val))
+	}
+	return httptransport.NewServer(
+		e,
+		httptransport.DecodeRequestFunc(dec),
+		httptransport.EncodeResponseFunc(enc),
+		ops...)
 }
 
-// Server wraps an endpoint and implements http.Handler.
-type Handler[I any, O any] struct {
-	e       endpoint.Endpoint[I, O]
-	dec     DecodeRequestFunc[I]
-	enc     EncodeResponseFunc[O]
-	options *handlerOptions
-	//before       []RequestFunc
-	//after        []ServerResponseFunc
-	//errorEncoder ErrorEncoder
-	//finalizer    []ServerFinalizerFunc
-	//errorHandler transport.ErrorHandler
-}
-
-// NewHandler constructs a new server, which implements http.Handler and wraps
-// the provided endpoint.
-func NewHandler[I any, O any](
-	e endpoint.Endpoint[I, O],
-	dec DecodeRequestFunc[I],
-	enc EncodeResponseFunc[O],
-	options ...HandlerOption,
-) *Handler[I, O] {
-	s := &Handler[I, O]{
-		e:   e,
-		dec: dec,
-		enc: enc,
-		//errorEncoder: DefaultErrorEncoder,
-		//errorHandler: transport.NewLogErrorHandler(log.StandardLogger()),
-	}
-
-	opt := &handlerOptions{
-		errorEncoder: DefaultErrorEncoder,
-		errorHandler: transport.NewLogErrorHandler(log.NewStandardLogger()),
-	}
-
-	for _, option := range options {
-		option(opt)
-	}
-
-	s.options = opt
-	return s
-}
-
-// HandlerOption sets an optional parameter for servers.
-type HandlerOption func(options *handlerOptions)
-
-// HandlerBefore functions are executed on the HTTP request object before the
+// ServerBefore functions are executed on the HTTP request object before the
 // request is decoded.
-func HandlerBefore(before ...RequestFunc) HandlerOption {
-	return func(s *handlerOptions) { s.before = append(s.before, before...) }
+func ServerBefore(before ...RequestFunc) ServerOption {
+	return ServerOption(
+		httptransport.ServerBefore(Map(before, func(val RequestFunc) httptransport.RequestFunc {
+			return httptransport.RequestFunc(val)
+		})...),
+	)
 }
 
-// HandlerAfter functions are executed on the HTTP response writer after the
+// ServerAfter functions are executed on the HTTP response writer after the
 // endpoint is invoked, but before anything is written to the client.
-func HandlerAfter(after ...ServerResponseFunc) HandlerOption {
-	return func(s *handlerOptions) { s.after = append(s.after, after...) }
+func ServerAfter(after ...ServerResponseFunc) ServerOption {
+	return ServerOption(
+		httptransport.ServerAfter(Map(after, func(val ServerResponseFunc) httptransport.ServerResponseFunc {
+			return httptransport.ServerResponseFunc(val)
+		})...),
+	)
 }
 
-// HandlerServerErrorEncoder is used to encode errors to the http.ResponseWriter
+// ServerErrorEncoder is used to encode errors to the http.ResponseWriter
 // whenever they're encountered in the processing of a request. Clients can
 // use this to provide custom error formatting and response codes. By default,
 // errors will be written with the DefaultErrorEncoder.
-func HandlerServerErrorEncoder(ee ErrorEncoder) HandlerOption {
-	return func(s *handlerOptions) { s.errorEncoder = ee }
-}
-
-// HandlerErrorLogger is used to log non-terminal errors. By default, no errors
-// are logged. This is intended as a diagnostic measure. Finer-grained control
-// of error handling, including logging in more detail, should be performed in a
-// custom HandlerServerErrorEncoder or ServerFinalizer, both of which have access to
-// the context.
-// Deprecated: Use ServerErrorHandler instead.
-func HandlerErrorLogger(logger log.Logger) HandlerOption {
-	return func(s *handlerOptions) { s.errorHandler = transport.NewLogErrorHandler(logger) }
+func ServerErrorEncoder(ee ErrorEncoder) ServerOption {
+	return ServerOption(
+		httptransport.ServerErrorEncoder(httptransport.ErrorEncoder(ee)),
+	)
 }
 
 // ServerErrorHandler is used to handle non-terminal errors. By default, non-terminal errors
 // are ignored. This is intended as a diagnostic measure. Finer-grained control
 // of error handling, including logging in more detail, should be performed in a
-// custom HandlerServerErrorEncoder or ServerFinalizer, both of which have access to
+// custom ServerErrorEncoder or ServerFinalizer, both of which have access to
 // the context.
-func ServerErrorHandler(errorHandler transport.ErrorHandler) HandlerOption {
-	return func(s *handlerOptions) { s.errorHandler = errorHandler }
+func ServerErrorHandler(errorHandler trxkit.ErrorHandler) ServerOption {
+	return ServerOption(
+		httptransport.ServerErrorHandler(errorHandler),
+	)
 }
 
 // ServerFinalizer is executed at the end of every HTTP request.
 // By default, no finalizer is registered.
-func ServerFinalizer(f ...ServerFinalizerFunc) HandlerOption {
-	return func(s *handlerOptions) { s.finalizer = append(s.finalizer, f...) }
-}
-
-// ServeHTTP implements http.Handler.
-func (s Handler[I, O]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	if len(s.options.finalizer) > 0 {
-		iw := &interceptingWriter{w, http.StatusOK, 0}
-		defer func() {
-			ctx = context.WithValue(ctx, ContextKeyResponseHeaders, iw.Header())
-			ctx = context.WithValue(ctx, ContextKeyResponseSize, iw.written)
-			for _, f := range s.options.finalizer {
-				f(ctx, iw.code, r)
-			}
-		}()
-		w = iw.reimplementInterfaces()
-	}
-
-	for _, f := range s.options.before {
-		ctx = f(ctx, r)
-	}
-
-	request, err := s.dec(ctx, r)
-	if err != nil {
-		s.options.errorHandler.Handle(ctx, err)
-		s.options.errorEncoder(ctx, err, w)
-		return
-	}
-
-	response, err := s.e(ctx, request)
-	if err != nil {
-		s.options.errorHandler.Handle(ctx, err)
-		s.options.errorEncoder(ctx, err, w)
-		return
-	}
-
-	for _, f := range s.options.after {
-		ctx = f(ctx, w)
-	}
-
-	if err := s.enc(ctx, w, response); err != nil {
-		s.options.errorHandler.Handle(ctx, err)
-		s.options.errorEncoder(ctx, err, w)
-		return
-	}
+func ServerFinalizer(f ...ServerFinalizerFunc) ServerOption {
+	return ServerOption(
+		httptransport.ServerFinalizer(Map(f, func(val ServerFinalizerFunc) httptransport.ServerFinalizerFunc {
+			return httptransport.ServerFinalizerFunc(val)
+		})...),
+	)
 }
 
 // ErrorEncoder is responsible for encoding an error to the ResponseWriter.
@@ -239,4 +166,32 @@ type StatusCoder interface {
 // the Content-Type is set.
 type Headerer interface {
 	Headers() http.Header
+}
+
+type interceptingWriter struct {
+	http.ResponseWriter
+	code    int
+	written int64
+}
+
+// WriteHeader may not be explicitly called, so care must be taken to
+// initialize w.code to its default value of http.StatusOK.
+func (w *interceptingWriter) WriteHeader(code int) {
+	w.code = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *interceptingWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	w.written += int64(n)
+	return n, err
+}
+
+func Map[I any, O any](slice []I, fn func(I) O) []O {
+	var list = make([]O, len(slice))
+	for i, val := range slice {
+		list[i] = fn(val)
+	}
+
+	return list
 }

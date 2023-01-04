@@ -1,11 +1,5 @@
 package logger
 
-import (
-	"os"
-
-	"github.com/rs/zerolog"
-)
-
 type Level int
 
 const (
@@ -22,8 +16,4 @@ type Logger interface {
 	Warn(msg string, keyvals ...interface{})
 	Error(msg string, keyvals ...interface{})
 	SetLevel(level Level)
-}
-
-func NewStandardLogger() Logger {
-	return NewZerolog(zerolog.New(os.Stderr).With().Timestamp().Logger())
 }
