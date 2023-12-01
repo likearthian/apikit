@@ -67,4 +67,15 @@ const (
 	ContextKeyRequestAcceptEncoding
 
 	ContextKeyURLParams
+
+	// ContextKeyRequestXTraceID is populated in the context by
+	// PopulateRequestContext. Its value is r.Header.Get("X-Trace-Id").
+	ContextKeyRequestXTraceID
+
+	ContextKeyRequestDatetime
+	ContextKeyRequestSignature
+
+	ContextKeyRequestScheme
+
+	ContextKeyRequestTLS
 )

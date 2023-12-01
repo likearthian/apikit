@@ -47,6 +47,11 @@ func SetRequestHeader(key, val string) RequestFunc {
 // the context from the HTTP request. Those values may be extracted using the
 // corresponding ContextKey type in this package.
 func PopulateRequestContext(ctx context.Context, r *http.Request) context.Context {
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+
 	for k, v := range map[contextKey]string{
 		ContextKeyRequestMethod:          r.Method,
 		ContextKeyRequestURI:             r.RequestURI,
@@ -61,6 +66,11 @@ func PopulateRequestContext(ctx context.Context, r *http.Request) context.Contex
 		ContextKeyRequestUserAgent:       r.Header.Get("User-Agent"),
 		ContextKeyRequestXRequestID:      r.Header.Get("X-Request-Id"),
 		ContextKeyRequestAccept:          r.Header.Get("Accept"),
+		ContextKeyRequestAcceptEncoding:  r.Header.Get("Accept-Encoding"),
+		ContextKeyRequestXTraceID:        r.Header.Get("X-Trace-Id"),
+		ContextKeyRequestDatetime:        r.Header.Get("datetime"),
+		ContextKeyRequestSignature:       r.Header.Get("signature"),
+		ContextKeyRequestScheme:          scheme,
 	} {
 		ctx = context.WithValue(ctx, k, v)
 	}

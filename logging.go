@@ -4,18 +4,18 @@ import (
 	"context"
 	"time"
 
-	"github.com/go-kit/kit/endpoint"
+	"github.com/likearthian/apikit/api"
 	log "github.com/likearthian/apikit/logger"
 	"github.com/likearthian/go-http/router"
 )
 
-func MakeEndpointLoggingMiddleware(logger log.Logger, endPointMethod string) endpoint.Middleware {
+func MakeEndpointLoggingMiddleware[I, O any](logger log.Logger, endPointMethod string) api.Middleware[I, O] {
 	if logger == nil {
 		return nil
 	}
 
-	return func(next endpoint.Endpoint) endpoint.Endpoint {
-		return func(ctx context.Context, request interface{}) (interface{}, error) {
+	return func(next api.Endpoint[I, O]) api.Endpoint[I, O] {
+		return func(ctx context.Context, request I) (O, error) {
 			reqid, ok := router.ReqIDFromContext(ctx)
 			if !ok {
 				reqid = ""
@@ -28,7 +28,7 @@ func MakeEndpointLoggingMiddleware(logger log.Logger, endPointMethod string) end
 				"ts", time.Now(),
 			}
 
-			var result interface{}
+			var result O
 			var err error
 			isErrLog := false
 

@@ -20,7 +20,7 @@ import (
 // request object. It's designed to be used in HTTP servers, for server-side
 // endpoints. One straightforward DecodeRequestFunc could be something that
 // JSON decodes from the request body to the concrete request type.
-type DecodeRequestFunc func(context.Context, *http.Request) (request interface{}, err error)
+type DecodeRequestFunc[T any] func(context.Context, *http.Request) (request T, err error)
 
 // EncodeRequestFunc encodes the passed request object into the HTTP request
 // object. It's designed to be used in HTTP clients, for client-side
@@ -38,7 +38,7 @@ type CreateRequestFunc func(context.Context, interface{}) (*http.Request, error)
 // writer. It's designed to be used in HTTP servers, for server-side
 // endpoints. One straightforward EncodeResponseFunc could be something that
 // JSON encodes the object directly to the response body.
-type EncodeResponseFunc func(context.Context, http.ResponseWriter, interface{}) error
+type EncodeResponseFunc[T any] func(context.Context, http.ResponseWriter, T) error
 
 // DecodeResponseFunc extracts a user-domain response object from an HTTP
 // response object. It's designed to be used in HTTP clients, for client-side
@@ -46,7 +46,7 @@ type EncodeResponseFunc func(context.Context, http.ResponseWriter, interface{}) 
 // JSON decodes from the response body to the concrete response type.
 type DecodeResponseFunc func(context.Context, *http.Response) (response interface{}, err error)
 
-func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (interface{}, error) {
+func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (T, error) {
 	var reqObj T
 
 	query := r.URL.Query()
@@ -65,7 +65,7 @@ func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (inter
 	return reqObj, nil
 }
 
-func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (interface{}, error) {
+func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (T, error) {
 	var reqObj T
 
 	query := r.URL.Query()
@@ -79,7 +79,7 @@ func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (inte
 
 	err := json.NewDecoder(r.Body).Decode(&reqObj)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", fmt.Errorf("bad request"), err)
+		return reqObj, fmt.Errorf("%w: %s", fmt.Errorf("bad request"), err)
 	}
 
 	if err := BindURLQuery(&reqObj, query); err != nil {
@@ -132,51 +132,6 @@ func CommonFileUploadDecoder[T any, PT FileUploader[T]](ctx context.Context, r *
 }
 
 func CommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
-	var reqObj = PT(new(T))
-
-	if err := r.ParseMultipartForm(1024 * 1024 * 5); err != nil {
-		return nil, err
-	}
-
-	for key := range r.MultipartForm.File {
-		file, header, err := r.FormFile(key)
-		if err != nil {
-			return nil, err
-		}
-
-		pr, pw := io.Pipe()
-		go func(rd io.ReadCloser) {
-			defer pw.Close()
-			defer rd.Close()
-			if _, err := io.Copy(pw, file); err != nil {
-				fmt.Println(err)
-			}
-		}(file)
-
-		reqObj.AddFileStream(header.Filename, pr, header.Header.Get("content-type"))
-	}
-
-	if err := BindFormData(reqObj, r.MultipartForm.Value); err != nil {
-		return nil, err
-	}
-
-	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
-	if ok {
-		//include params into query to be parsed
-		for k, v := range params {
-			query.Add(k, v)
-		}
-	}
-
-	if err := BindURLQuery(reqObj, query); err != nil {
-		return nil, err
-	}
-
-	return reqObj, nil
-}
-
-func NewCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
 	maxMemory := int64(5 * 1024 * 1024)
 	var reqObj = PT(new(T))
 
@@ -246,14 +201,14 @@ func NewCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx conte
 	return reqObj, nil
 }
 
-func MakeCommonHTTPResponseEncoder[T any](encodeFunc func(context.Context, http.ResponseWriter, T) error) httptransport.EncodeResponseFunc {
+func MakeCommonHTTPResponseEncoder(encodeFunc func(context.Context, http.ResponseWriter, any) error) httptransport.EncodeResponseFunc {
 	return func(ctx context.Context, w http.ResponseWriter, response interface{}) error {
-		res, ok := response.(T)
-		if !ok {
-			return fmt.Errorf("failed to encode response. expected %T, got %T", res, response)
-		}
+		// res, ok := response.(T)
+		// if !ok {
+		// 	return fmt.Errorf("failed to encode response. expected %T, got %T", res, response)
+		// }
 
-		return encodeFunc(ctx, w, res)
+		return encodeFunc(ctx, w, response)
 	}
 }
 

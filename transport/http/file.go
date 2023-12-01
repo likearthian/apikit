@@ -2,8 +2,6 @@ package http
 
 import (
 	"io"
-
-	utype "github.com/likearthian/types"
 )
 
 type GetFileRequestDTO struct {
@@ -46,22 +44,6 @@ type PostFileDTO struct {
 	FileName    string
 	Path        string
 	Aud         []string
-}
-
-type PreSubmitPQAReportDTO struct {
-	Content        []byte
-	ContentType    string
-	FileName       string
-	Sheet          string        `form:"sheet"`
-	ProjectID      string        `form:"project"`
-	TestType       string        `form:"tc_type"`
-	UpdateExisting utype.Boolean `form:"update"`
-}
-
-func (s *PreSubmitPQAReportDTO) AddFile(name string, content []byte, contentType string) {
-	s.FileName = name
-	s.Content = content
-	s.ContentType = contentType
 }
 
 type FileUploader[T any] interface {

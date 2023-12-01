@@ -1,52 +1,73 @@
 package http
 
+// This package were taken and modified from https://github.com/go-kit/kit by peter bourgon
+
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 
-	"github.com/go-kit/kit/endpoint"
-	httptransport "github.com/go-kit/kit/transport/http"
+	"github.com/likearthian/apikit/api"
+	"github.com/likearthian/apikit/logger"
 	trxkit "github.com/likearthian/apikit/transport"
 )
 
-type ServerOption func(server *httptransport.Server)
+type Server[I, O any] struct {
+	e            api.Endpoint[I, O]
+	dec          DecodeRequestFunc[I]
+	enc          EncodeResponseFunc[O]
+	before       []RequestFunc
+	after        []ServerResponseFunc
+	errorEncoder ErrorEncoder
+	finalizer    []ServerFinalizerFunc
+	errorHandler trxkit.ErrorHandler
+}
 
-func NewServer(
-	e endpoint.Endpoint,
-	dec DecodeRequestFunc,
-	enc EncodeResponseFunc,
+type serverOption struct {
+	before       []RequestFunc
+	after        []ServerResponseFunc
+	errorEncoder ErrorEncoder
+	errorHandler trxkit.ErrorHandler
+	finalizer    []ServerFinalizerFunc
+}
+
+type ServerOption func(opt *serverOption)
+
+func NewServer[I, O any](
+	e api.Endpoint[I, O],
+	dec DecodeRequestFunc[I],
+	enc EncodeResponseFunc[O],
 	options ...ServerOption,
-) *httptransport.Server {
-	var ops []httptransport.ServerOption
-	for _, val := range options {
-		ops = append(ops, httptransport.ServerOption(val))
+) *Server[I, O] {
+	opts := &serverOption{}
+	for _, option := range options {
+		option(opts)
 	}
-	return httptransport.NewServer(
-		e,
-		httptransport.DecodeRequestFunc(dec),
-		httptransport.EncodeResponseFunc(enc),
-		ops...)
+
+	s := &Server[I, O]{
+		e:            e,
+		dec:          dec,
+		enc:          enc,
+		errorEncoder: DefaultErrorEncoder,
+		errorHandler: trxkit.NewLogErrorHandler(logger.NewNoopLogger()),
+		before:       opts.before,
+		after:        opts.after,
+		finalizer:    opts.finalizer,
+	}
+	return s
 }
 
 // ServerBefore functions are executed on the HTTP request object before the
 // request is decoded.
 func ServerBefore(before ...RequestFunc) ServerOption {
-	return ServerOption(
-		httptransport.ServerBefore(Map(before, func(val RequestFunc) httptransport.RequestFunc {
-			return httptransport.RequestFunc(val)
-		})...),
-	)
+	return func(s *serverOption) { s.before = append(s.before, before...) }
 }
 
 // ServerAfter functions are executed on the HTTP response writer after the
 // endpoint is invoked, but before anything is written to the client.
 func ServerAfter(after ...ServerResponseFunc) ServerOption {
-	return ServerOption(
-		httptransport.ServerAfter(Map(after, func(val ServerResponseFunc) httptransport.ServerResponseFunc {
-			return httptransport.ServerResponseFunc(val)
-		})...),
-	)
+	return func(s *serverOption) { s.after = append(s.after, after...) }
 }
 
 // ServerErrorEncoder is used to encode errors to the http.ResponseWriter
@@ -54,9 +75,7 @@ func ServerAfter(after ...ServerResponseFunc) ServerOption {
 // use this to provide custom error formatting and response codes. By default,
 // errors will be written with the DefaultErrorEncoder.
 func ServerErrorEncoder(ee ErrorEncoder) ServerOption {
-	return ServerOption(
-		httptransport.ServerErrorEncoder(httptransport.ErrorEncoder(ee)),
-	)
+	return func(s *serverOption) { s.errorEncoder = ee }
 }
 
 // ServerErrorHandler is used to handle non-terminal errors. By default, non-terminal errors
@@ -65,19 +84,58 @@ func ServerErrorEncoder(ee ErrorEncoder) ServerOption {
 // custom ServerErrorEncoder or ServerFinalizer, both of which have access to
 // the context.
 func ServerErrorHandler(errorHandler trxkit.ErrorHandler) ServerOption {
-	return ServerOption(
-		httptransport.ServerErrorHandler(errorHandler),
-	)
+	return func(s *serverOption) { s.errorHandler = errorHandler }
 }
 
 // ServerFinalizer is executed at the end of every HTTP request.
 // By default, no finalizer is registered.
 func ServerFinalizer(f ...ServerFinalizerFunc) ServerOption {
-	return ServerOption(
-		httptransport.ServerFinalizer(Map(f, func(val ServerFinalizerFunc) httptransport.ServerFinalizerFunc {
-			return httptransport.ServerFinalizerFunc(val)
-		})...),
-	)
+	return func(s *serverOption) { s.finalizer = append(s.finalizer, f...) }
+}
+
+// ServeHTTP implements http.Handler.
+func (s Server[I, O]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	if len(s.finalizer) > 0 {
+		iw := &interceptingWriter{w, http.StatusOK, 0}
+		defer func() {
+			ctx = context.WithValue(ctx, ContextKeyResponseHeaders, iw.Header())
+			ctx = context.WithValue(ctx, ContextKeyResponseSize, iw.written)
+			for _, f := range s.finalizer {
+				f(ctx, iw.code, r)
+			}
+		}()
+		w = iw.reimplementInterfaces()
+	}
+
+	for _, f := range s.before {
+		ctx = f(ctx, r)
+	}
+
+	request, err := s.dec(ctx, r)
+	if err != nil {
+		s.errorHandler.Handle(ctx, err)
+		s.errorEncoder(ctx, err, w)
+		return
+	}
+
+	response, err := s.e(ctx, request)
+	if err != nil {
+		s.errorHandler.Handle(ctx, err)
+		s.errorEncoder(ctx, err, w)
+		return
+	}
+
+	for _, f := range s.after {
+		ctx = f(ctx, w)
+	}
+
+	if err := s.enc(ctx, w, response); err != nil {
+		s.errorHandler.Handle(ctx, err)
+		s.errorEncoder(ctx, err, w)
+		return
+	}
 }
 
 // ErrorEncoder is responsible for encoding an error to the ResponseWriter.
@@ -185,6 +243,238 @@ func (w *interceptingWriter) Write(p []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(p)
 	w.written += int64(n)
 	return n, err
+}
+
+// reimplementInterfaces returns a wrapped version of the embedded ResponseWriter
+// and selectively implements the same combination of additional interfaces as
+// the wrapped one. The interfaces it may implement are: http.Hijacker,
+// http.CloseNotifier, http.Pusher, http.Flusher and io.ReaderFrom. The standard
+// library is known to assert the existence of these interfaces and behaves
+// differently. This implementation is derived from
+// https://github.com/felixge/httpsnoop.
+func (w *interceptingWriter) reimplementInterfaces() http.ResponseWriter {
+	var (
+		hj, i0 = w.ResponseWriter.(http.Hijacker)
+		cn, i1 = w.ResponseWriter.(http.CloseNotifier)
+		pu, i2 = w.ResponseWriter.(http.Pusher)
+		fl, i3 = w.ResponseWriter.(http.Flusher)
+		rf, i4 = w.ResponseWriter.(io.ReaderFrom)
+	)
+
+	switch {
+	case !i0 && !i1 && !i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+		}{w}
+	case !i0 && !i1 && !i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			io.ReaderFrom
+		}{w, rf}
+	case !i0 && !i1 && !i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Flusher
+		}{w, fl}
+	case !i0 && !i1 && !i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Flusher
+			io.ReaderFrom
+		}{w, fl, rf}
+	case !i0 && !i1 && i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Pusher
+		}{w, pu}
+	case !i0 && !i1 && i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Pusher
+			io.ReaderFrom
+		}{w, pu, rf}
+	case !i0 && !i1 && i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Pusher
+			http.Flusher
+		}{w, pu, fl}
+	case !i0 && !i1 && i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Pusher
+			http.Flusher
+			io.ReaderFrom
+		}{w, pu, fl, rf}
+	case !i0 && i1 && !i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+		}{w, cn}
+	case !i0 && i1 && !i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			io.ReaderFrom
+		}{w, cn, rf}
+	case !i0 && i1 && !i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			http.Flusher
+		}{w, cn, fl}
+	case !i0 && i1 && !i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			http.Flusher
+			io.ReaderFrom
+		}{w, cn, fl, rf}
+	case !i0 && i1 && i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			http.Pusher
+		}{w, cn, pu}
+	case !i0 && i1 && i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			http.Pusher
+			io.ReaderFrom
+		}{w, cn, pu, rf}
+	case !i0 && i1 && i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			http.Pusher
+			http.Flusher
+		}{w, cn, pu, fl}
+	case !i0 && i1 && i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.CloseNotifier
+			http.Pusher
+			http.Flusher
+			io.ReaderFrom
+		}{w, cn, pu, fl, rf}
+	case i0 && !i1 && !i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+		}{w, hj}
+	case i0 && !i1 && !i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			io.ReaderFrom
+		}{w, hj, rf}
+	case i0 && !i1 && !i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.Flusher
+		}{w, hj, fl}
+	case i0 && !i1 && !i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.Flusher
+			io.ReaderFrom
+		}{w, hj, fl, rf}
+	case i0 && !i1 && i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.Pusher
+		}{w, hj, pu}
+	case i0 && !i1 && i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.Pusher
+			io.ReaderFrom
+		}{w, hj, pu, rf}
+	case i0 && !i1 && i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.Pusher
+			http.Flusher
+		}{w, hj, pu, fl}
+	case i0 && !i1 && i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.Pusher
+			http.Flusher
+			io.ReaderFrom
+		}{w, hj, pu, fl, rf}
+	case i0 && i1 && !i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+		}{w, hj, cn}
+	case i0 && i1 && !i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			io.ReaderFrom
+		}{w, hj, cn, rf}
+	case i0 && i1 && !i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			http.Flusher
+		}{w, hj, cn, fl}
+	case i0 && i1 && !i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			http.Flusher
+			io.ReaderFrom
+		}{w, hj, cn, fl, rf}
+	case i0 && i1 && i2 && !i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			http.Pusher
+		}{w, hj, cn, pu}
+	case i0 && i1 && i2 && !i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			http.Pusher
+			io.ReaderFrom
+		}{w, hj, cn, pu, rf}
+	case i0 && i1 && i2 && i3 && !i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			http.Pusher
+			http.Flusher
+		}{w, hj, cn, pu, fl}
+	case i0 && i1 && i2 && i3 && i4:
+		return struct {
+			http.ResponseWriter
+			http.Hijacker
+			http.CloseNotifier
+			http.Pusher
+			http.Flusher
+			io.ReaderFrom
+		}{w, hj, cn, pu, fl, rf}
+	default:
+		return struct {
+			http.ResponseWriter
+		}{w}
+	}
 }
 
 func Map[I any, O any](slice []I, fn func(I) O) []O {
