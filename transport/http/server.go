@@ -55,6 +55,15 @@ func NewServer[I, O any](
 		after:        opts.after,
 		finalizer:    opts.finalizer,
 	}
+
+	if opts.errorEncoder != nil {
+		s.errorEncoder = opts.errorEncoder
+	}
+
+	if opts.errorHandler != nil {
+		s.errorHandler = opts.errorHandler
+	}
+
 	return s
 }
 
