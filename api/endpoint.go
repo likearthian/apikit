@@ -6,6 +6,14 @@ import (
 
 type Endpoint[I, O any] func(context.Context, I) (O, error)
 
+func (ep Endpoint[I, O]) Chain(outer Middleware[I, O], others ...Middleware[I, O]) Endpoint[I, O] {
+	for i := len(others) - 1; i >= 0; i-- {
+		ep = others[i](ep)
+	}
+
+	return outer(ep)
+}
+
 func Nop(context.Context, interface{}) (interface{}, error) { return struct{}{}, nil }
 
 // Middleware is a chainable behavior modifier for endpoints.
