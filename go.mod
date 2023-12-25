@@ -13,8 +13,14 @@ require (
 require (
 	github.com/dongri/phonenumber v0.0.0-20220127125919-1e58a2b4cf97 // indirect
 	github.com/fatih/color v1.12.0 // indirect
+	github.com/fatih/color v1.12.0 // indirect
 	github.com/go-kit/log v0.2.0 // indirect
 	github.com/go-logfmt/logfmt v0.5.1 // indirect
+	github.com/julienschmidt/httprouter v1.3.0 // indirect
+	github.com/likearthian/go-logger v0.0.0-20201222085625-8250195f9e54 // indirect
+	github.com/mattn/go-colorable v0.1.8 // indirect
+	github.com/mattn/go-isatty v0.0.14 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/julienschmidt/httprouter v1.3.0 // indirect
 	github.com/likearthian/go-logger v0.0.0-20201222085625-8250195f9e54 // indirect
 	github.com/mattn/go-colorable v0.1.8 // indirect
