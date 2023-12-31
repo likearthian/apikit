@@ -52,7 +52,7 @@ type FileUploader[T any] interface {
 }
 
 type FileStreamUploader[T any] interface {
-	AddFileStream(name string, reader io.ReadCloser, contentType string)
+	AddFileStream(fileName string, reader io.ReadCloser, contentType string)
 	*T
 }
 

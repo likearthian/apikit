@@ -131,7 +131,157 @@ func CommonFileUploadDecoder[T any, PT FileUploader[T]](ctx context.Context, r *
 	return reqObj, nil
 }
 
-func CommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
+type FileStreamObject struct {
+	Name        string
+	FileName    string
+	ContentType string
+	Reader      *io.PipeReader
+}
+
+type FileUploadStreamRequestDTO struct {
+	Query    url.Values
+	FileChan chan FileStreamObject
+	ErrChan  chan error
+}
+
+func CommonFileUploadStreamDecoder(ctx context.Context, r *http.Request) (FileUploadStreamRequestDTO, error) {
+	fileChan := make(chan FileStreamObject)
+	errChan := make(chan error)
+
+	query := r.URL.Query()
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+
+	if ok {
+		//include params into query to be parsed
+		for k, v := range params {
+			query.Add(k, v)
+		}
+	}
+
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return FileUploadStreamRequestDTO{}, err
+	}
+
+	go func() {
+		defer close(fileChan)
+		defer close(errChan)
+
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			name := part.FormName()
+			filename := part.FileName()
+			header := part.Header
+			if filename == "" {
+				// value, store as string in memory
+				continue
+			}
+
+			pr, pw := io.Pipe()
+			go func(rd io.ReadCloser) {
+				defer pw.Close()
+				defer rd.Close()
+				if _, err := io.Copy(pw, rd); err != nil {
+					pw.CloseWithError(err)
+				}
+			}(part)
+
+			fileChan <- FileStreamObject{
+				Name:        name,
+				FileName:    filename,
+				ContentType: header.Get("content-type"),
+				Reader:      pr,
+			}
+		}
+	}()
+
+	return FileUploadStreamRequestDTO{
+		Query:    query,
+		FileChan: fileChan,
+		ErrChan:  errChan,
+	}, nil
+}
+
+func CommonSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (PT, error) {
+	var reqObj = PT(new(T))
+
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return reqObj, err
+	}
+
+	maxMemory := int64(5 * 1024 * 1024)
+	formData := url.Values{}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return reqObj, err
+		}
+
+		name := part.FormName()
+		filename := part.FileName()
+		header := part.Header
+		var b bytes.Buffer
+		if filename == "" {
+			// value, store as string in memory
+			n, err := io.CopyN(&b, part, maxMemory+1)
+			if err != nil && err != io.EOF {
+				return reqObj, err
+			}
+			if maxMemory-n < 0 {
+				return reqObj, fmt.Errorf("multipart: message to large")
+			}
+			formData[name] = append(formData[name], b.String())
+			continue
+		}
+
+		pr, pw := io.Pipe()
+		go func(rd io.ReadCloser) {
+			defer pw.Close()
+			defer rd.Close()
+			if _, err := io.Copy(pw, rd); err != nil {
+				pw.CloseWithError(err)
+			}
+		}(part)
+
+		reqObj.AddFileStream(filename, pr, header.Get("content-type"))
+		break
+	}
+
+	if err := BindFormData(reqObj, formData); err != nil {
+		return nil, err
+	}
+
+	query := r.URL.Query()
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	if ok {
+		//include params into query to be parsed
+		for k, v := range params {
+			query.Add(k, v)
+		}
+	}
+
+	if err := BindURLQuery(reqObj, query); err != nil {
+		return nil, err
+	}
+
+	return reqObj, nil
+}
+
+func OldCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
 	maxMemory := int64(5 * 1024 * 1024)
 	var reqObj = PT(new(T))
 
