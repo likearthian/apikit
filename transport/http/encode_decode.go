@@ -13,6 +13,7 @@ import (
 	"net/http"
 
 	httptransport "github.com/go-kit/kit/transport/http"
+	"github.com/likearthian/apikit/api"
 	gohttp "github.com/likearthian/go-http"
 )
 
@@ -50,7 +51,7 @@ func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (T, er
 	var reqObj T
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -69,7 +70,7 @@ func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (T, e
 	var reqObj T
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -116,7 +117,7 @@ func CommonFileUploadDecoder[T any, PT FileUploader[T]](ctx context.Context, r *
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -149,7 +150,7 @@ func CommonFileUploadStreamDecoder(ctx context.Context, r *http.Request) (FileUp
 	errChan := make(chan error)
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 
 	if ok {
 		//include params into query to be parsed
@@ -266,7 +267,7 @@ func CommonSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx co
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -336,7 +337,7 @@ func OldCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx conte
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -399,7 +400,7 @@ type requestDecoderOption struct {
 }
 
 func getAcceptFromContext(ctx context.Context) string {
-	val := ctx.Value(ContextKeyRequestAccept)
+	val := ctx.Value(api.ContextKeyRequestAccept)
 	enc, ok := val.(string)
 	if ok {
 		encodings := strings.Split(strings.ToLower(enc), ",")
@@ -410,7 +411,7 @@ func getAcceptFromContext(ctx context.Context) string {
 }
 
 func needGzipped(ctx context.Context) bool {
-	val := ctx.Value(ContextKeyRequestAcceptEncoding)
+	val := ctx.Value(api.ContextKeyRequestAcceptEncoding)
 	enc, ok := val.(string)
 	var gzipped = false
 	if ok {
