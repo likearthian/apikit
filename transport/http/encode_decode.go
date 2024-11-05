@@ -74,7 +74,7 @@ func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (T, e
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
-			query.Add(k, v)
+			query.Set(k, v)
 		}
 	}
 
