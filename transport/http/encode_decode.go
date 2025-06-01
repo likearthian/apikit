@@ -13,6 +13,7 @@ import (
 	"net/http"
 
 	httptransport "github.com/go-kit/kit/transport/http"
+	"github.com/likearthian/apikit/api"
 	gohttp "github.com/likearthian/go-http"
 )
 
@@ -26,13 +27,13 @@ type DecodeRequestFunc[T any] func(context.Context, *http.Request) (request T, e
 // object. It's designed to be used in HTTP clients, for client-side
 // endpoints. One straightforward EncodeRequestFunc could be something that JSON
 // encodes the object directly to the request body.
-type EncodeRequestFunc func(context.Context, *http.Request, interface{}) error
+type EncodeRequestFunc func(context.Context, *http.Request, any) error
 
 // CreateRequestFunc creates an outgoing HTTP request based on the passed
 // request object. It's designed to be used in HTTP clients, for client-side
 // endpoints. It's a more powerful version of EncodeRequestFunc, and can be used
 // if more fine-grained control of the HTTP request is required.
-type CreateRequestFunc func(context.Context, interface{}) (*http.Request, error)
+type CreateRequestFunc func(context.Context, any) (*http.Request, error)
 
 // EncodeResponseFunc encodes the passed response object to the HTTP response
 // writer. It's designed to be used in HTTP servers, for server-side
@@ -50,7 +51,7 @@ func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (T, er
 	var reqObj T
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -69,7 +70,7 @@ func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (T, e
 	var reqObj T
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -116,7 +117,7 @@ func CommonFileUploadDecoder[T any, PT FileUploader[T]](ctx context.Context, r *
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -131,7 +132,157 @@ func CommonFileUploadDecoder[T any, PT FileUploader[T]](ctx context.Context, r *
 	return reqObj, nil
 }
 
-func CommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
+type FileStreamObject struct {
+	Name        string
+	FileName    string
+	ContentType string
+	Reader      *io.PipeReader
+}
+
+type FileUploadStreamRequestDTO struct {
+	Query    url.Values
+	FileChan chan FileStreamObject
+	ErrChan  chan error
+}
+
+func CommonFileUploadStreamDecoder(ctx context.Context, r *http.Request) (FileUploadStreamRequestDTO, error) {
+	fileChan := make(chan FileStreamObject)
+	errChan := make(chan error)
+
+	query := r.URL.Query()
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+
+	if ok {
+		//include params into query to be parsed
+		for k, v := range params {
+			query.Add(k, v)
+		}
+	}
+
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return FileUploadStreamRequestDTO{}, err
+	}
+
+	go func() {
+		defer close(fileChan)
+		defer close(errChan)
+
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			name := part.FormName()
+			filename := part.FileName()
+			header := part.Header
+			if filename == "" {
+				// value, store as string in memory
+				continue
+			}
+
+			pr, pw := io.Pipe()
+			go func(rd io.ReadCloser) {
+				defer pw.Close()
+				defer rd.Close()
+				if _, err := io.Copy(pw, rd); err != nil {
+					pw.CloseWithError(err)
+				}
+			}(part)
+
+			fileChan <- FileStreamObject{
+				Name:        name,
+				FileName:    filename,
+				ContentType: header.Get("content-type"),
+				Reader:      pr,
+			}
+		}
+	}()
+
+	return FileUploadStreamRequestDTO{
+		Query:    query,
+		FileChan: fileChan,
+		ErrChan:  errChan,
+	}, nil
+}
+
+func CommonSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (PT, error) {
+	var reqObj = PT(new(T))
+
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return reqObj, err
+	}
+
+	maxMemory := int64(5 * 1024 * 1024)
+	formData := url.Values{}
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return reqObj, err
+		}
+
+		name := part.FormName()
+		filename := part.FileName()
+		header := part.Header
+		var b bytes.Buffer
+		if filename == "" {
+			// value, store as string in memory
+			n, err := io.CopyN(&b, part, maxMemory+1)
+			if err != nil && err != io.EOF {
+				return reqObj, err
+			}
+			if maxMemory-n < 0 {
+				return reqObj, fmt.Errorf("multipart: message to large")
+			}
+			formData[name] = append(formData[name], b.String())
+			continue
+		}
+
+		pr, pw := io.Pipe()
+		go func(rd io.ReadCloser) {
+			defer pw.Close()
+			defer rd.Close()
+			if _, err := io.Copy(pw, rd); err != nil {
+				pw.CloseWithError(err)
+			}
+		}(part)
+
+		reqObj.AddFileStream(filename, pr, header.Get("content-type"))
+		break
+	}
+
+	if err := BindFormData(reqObj, formData); err != nil {
+		return nil, err
+	}
+
+	query := r.URL.Query()
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	if ok {
+		//include params into query to be parsed
+		for k, v := range params {
+			query.Add(k, v)
+		}
+	}
+
+	if err := BindURLQuery(reqObj, query); err != nil {
+		return nil, err
+	}
+
+	return reqObj, nil
+}
+
+func OldCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
 	maxMemory := int64(5 * 1024 * 1024)
 	var reqObj = PT(new(T))
 
@@ -186,7 +337,7 @@ func CommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -249,7 +400,7 @@ type requestDecoderOption struct {
 }
 
 func getAcceptFromContext(ctx context.Context) string {
-	val := ctx.Value(ContextKeyRequestAccept)
+	val := ctx.Value(api.ContextKeyRequestAccept)
 	enc, ok := val.(string)
 	if ok {
 		encodings := strings.Split(strings.ToLower(enc), ",")
@@ -260,7 +411,7 @@ func getAcceptFromContext(ctx context.Context) string {
 }
 
 func needGzipped(ctx context.Context) bool {
-	val := ctx.Value(ContextKeyRequestAcceptEncoding)
+	val := ctx.Value(api.ContextKeyRequestAcceptEncoding)
 	enc, ok := val.(string)
 	var gzipped = false
 	if ok {

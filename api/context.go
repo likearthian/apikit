@@ -1,11 +1,11 @@
-package http
+package api
 
-type contextKey int
+type ContextKey int
 
 const (
 	// ContextKeyRequestMethod is populated in the context by
 	// PopulateRequestContext. Its value is r.Method.
-	ContextKeyRequestMethod contextKey = iota
+	ContextKeyRequestMethod ContextKey = iota
 
 	// ContextKeyRequestURI is populated in the context by
 	// PopulateRequestContext. Its value is r.RequestURI.
@@ -78,4 +78,10 @@ const (
 	ContextKeyRequestScheme
 
 	ContextKeyRequestTLS
+
+	ContextKeyJWTToken
+
+	// JWTClaimsContextKey holds the key used to store the JWT Claims in the
+	// context.
+	ContextKeyJWTClaims
 )
