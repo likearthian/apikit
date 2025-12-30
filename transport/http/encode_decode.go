@@ -12,9 +12,7 @@ import (
 
 	"net/http"
 
-	httptransport "github.com/go-kit/kit/transport/http"
 	"github.com/likearthian/apikit/api"
-	gohttp "github.com/likearthian/go-http"
 )
 
 // DecodeRequestFunc extracts a user-domain request object from an HTTP
@@ -47,11 +45,26 @@ type EncodeResponseFunc[T any] func(context.Context, http.ResponseWriter, T) err
 // JSON decodes from the response body to the concrete response type.
 type DecodeResponseFunc func(context.Context, *http.Response) (response interface{}, err error)
 
-func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (T, error) {
+// DefaultGetByIDStringRequestDecoder is a DecodeRequestFunc that can be used to simply decode request query param "id" into string
+func DefaultGetByIDStringRequestDecoder(ctx context.Context, r *http.Request) (string, error) {
+	query := r.URL.Query()
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+	if ok {
+		//include params into query to be parsed
+		for k, v := range params {
+			query.Set(k, v)
+		}
+	}
+
+	return query.Get("id"), nil
+}
+
+// DefaultGetRequestDecoder is a DecodeRequestFunc that can be used to decode request query params into the request object T
+func DefaultGetRequestDecoder[T any](ctx context.Context, r *http.Request) (T, error) {
 	var reqObj T
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -66,11 +79,12 @@ func CommonGetRequestDecoder[T any](ctx context.Context, r *http.Request) (T, er
 	return reqObj, nil
 }
 
-func CommonPostRequestDecoder[T any](ctx context.Context, r *http.Request) (T, error) {
+// DefaultPostRequestDecoder is a DecodeRequestFunc that can be used to decode request query params and parse json body into the request object T
+func DefaultPostRequestDecoder[T any](ctx context.Context, r *http.Request) (T, error) {
 	var reqObj T
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -117,7 +131,7 @@ func CommonFileUploadDecoder[T any, PT FileUploader[T]](ctx context.Context, r *
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -150,7 +164,7 @@ func CommonFileUploadStreamDecoder(ctx context.Context, r *http.Request) (FileUp
 	errChan := make(chan error)
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
 
 	if ok {
 		//include params into query to be parsed
@@ -212,7 +226,9 @@ func CommonFileUploadStreamDecoder(ctx context.Context, r *http.Request) (FileUp
 	}, nil
 }
 
-func CommonSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (PT, error) {
+// DefaultSingleFileUploadStreamDecoder is a DecodeRequestFunc that can be used to decode request query params and parse multipart form body
+// that contains a single file into the request FileStreamUploader interface object T
+func DefaultSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (PT, error) {
 	var reqObj = PT(new(T))
 
 	reader, err := r.MultipartReader()
@@ -267,7 +283,7 @@ func CommonSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx co
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -280,6 +296,95 @@ func CommonSingleFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx co
 	}
 
 	return reqObj, nil
+}
+
+type FormStreamUploader[T any] interface {
+	SetFileStream(formName string, fileName string, reader io.ReadCloser, contentType string)
+	*T
+}
+
+func CreateMultipartStreamDecoder[T any, PT FormStreamUploader[T]](maxFileSize int64) DecodeRequestFunc[PT] {
+	return func(ctx context.Context, r *http.Request) (PT, error) {
+		maxDataMemory := int64(5 * 1024 * 1024)
+		var reqObj = PT(new(T))
+
+		reader, err := r.MultipartReader()
+		if err != nil {
+			return nil, err
+		}
+
+		formData := url.Values{}
+		var jsonData [][]byte
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+
+			if err != nil {
+				return nil, err
+			}
+
+			name := part.FormName()
+			filename := part.FileName()
+			header := part.Header
+
+			var b = new(bytes.Buffer)
+			if filename == "" {
+				// value, store as string in memory
+				n, err := io.CopyN(b, part, maxDataMemory+1)
+				if err != nil && err != io.EOF {
+					return nil, err
+				}
+				if maxDataMemory-n < 0 {
+					return nil, fmt.Errorf("%w. multipart: message too large", api.ErrBadRequest)
+				}
+
+				contentType := header.Get(HeaderContentType)
+				if contentType == HttpContentTypeJson {
+					jsonData = append(jsonData, b.Bytes())
+				} else {
+					formData[name] = append(formData[name], b.String())
+				}
+				continue
+			}
+
+			n, err := io.CopyN(b, part, maxFileSize+1)
+			if err != nil && err != io.EOF {
+				return nil, err
+			}
+			if maxFileSize-n < 0 {
+				return nil, fmt.Errorf("%w. multipart: file too large", api.ErrBadRequest)
+			}
+
+			reqObj.SetFileStream(name, filename, io.NopCloser(b), header.Get("content-type"))
+		}
+
+		if err := BindFormData(reqObj, formData); err != nil {
+			return nil, err
+		}
+
+		for i, _ := range jsonData {
+			if err := json.Unmarshal(jsonData[i], reqObj); err != nil {
+				return nil, err
+			}
+		}
+
+		query := r.URL.Query()
+		params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
+		if ok {
+			//include params into query to be parsed
+			for k, v := range params {
+				query.Add(k, v)
+			}
+		}
+
+		if err := BindURLQuery(reqObj, query); err != nil {
+			return nil, err
+		}
+
+		return reqObj, nil
+	}
 }
 
 func OldCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx context.Context, r *http.Request) (interface{}, error) {
@@ -337,7 +442,7 @@ func OldCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx conte
 	}
 
 	query := r.URL.Query()
-	params, ok := ctx.Value(api.ContextKeyURLParams).(map[string]string)
+	params, ok := ctx.Value(ContextKeyURLParams).(map[string]string)
 	if ok {
 		//include params into query to be parsed
 		for k, v := range params {
@@ -352,8 +457,8 @@ func OldCommonFileUploadStreamDecoder[T any, PT FileStreamUploader[T]](ctx conte
 	return reqObj, nil
 }
 
-func MakeCommonHTTPResponseEncoder(encodeFunc func(context.Context, http.ResponseWriter, any) error) httptransport.EncodeResponseFunc {
-	return func(ctx context.Context, w http.ResponseWriter, response interface{}) error {
+func MakeCommonHTTPResponseEncoder[T any](encodeFunc func(context.Context, http.ResponseWriter, T) error) EncodeResponseFunc[T] {
+	return func(ctx context.Context, w http.ResponseWriter, response T) error {
 		// res, ok := response.(T)
 		// if !ok {
 		// 	return fmt.Errorf("failed to encode response. expected %T, got %T", res, response)
@@ -363,8 +468,13 @@ func MakeCommonHTTPResponseEncoder(encodeFunc func(context.Context, http.Respons
 	}
 }
 
-func CommonJSONResponseEncoder(ctx context.Context, w http.ResponseWriter, response interface{}) error {
-	w.Header().Set(gohttp.HeaderContentType, gohttp.HttpContentTypeJson)
+// DefaultJSONResponseEncoder is a EncodeResponseFunc that can be used to encode response object into json.
+// your response T will be enclosed in a BaseResponse object in Data field.
+func DefaultJSONResponseEncoder[T any](ctx context.Context, w http.ResponseWriter, response T) error {
+	w.Header().Set(HeaderContentType, HttpContentTypeJson)
+	reqID, _ := ReqIDFromContext(ctx)
+
+	payload := api.SuccessResponse(reqID, response)
 	var gw io.Writer = w
 	if needGzipped(ctx) {
 		w.Header().Set("Content-Encoding", "gzip")
@@ -373,17 +483,61 @@ func CommonJSONResponseEncoder(ctx context.Context, w http.ResponseWriter, respo
 		gw = gz
 	}
 
-	return json.NewEncoder(gw).Encode(response)
+	return json.NewEncoder(gw).Encode(payload)
 }
 
-func CommonFileResponseEncoder(ctx context.Context, w http.ResponseWriter, response any) error {
-	fileres, ok := response.(*FileResponse)
-	if !ok {
-		return fmt.Errorf("response object is not of type *FileResponse")
+// MakeGenericJSONResponseEncoder is a EncodeResponseFunc generator that can be used to encode response object into json.
+// you can pass a responseWrapper function to wrap your response object into another object.
+// pass nil to encode the response T as is
+func MakeGenericJSONResponseEncoder[T any](responseWrapper func(ctx context.Context, response T) any) EncodeResponseFunc[T] {
+	return func(ctx context.Context, w http.ResponseWriter, response T) error {
+		w.Header().Set(HeaderContentType, HttpContentTypeJson)
+
+		var payload any = response
+		if responseWrapper != nil {
+			payload = responseWrapper(ctx, response)
+		}
+
+		var gw io.Writer = w
+		if needGzipped(ctx) {
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			defer gz.Close()
+			gw = gz
+		}
+
+		return json.NewEncoder(gw).Encode(payload)
+	}
+}
+
+// DefaultPagedJSONResponseEncoder is a EncodeResponseFunc that can be used to encode response object into json.
+// it need the response PagedData[T], and will be enclosed in a BaseResponse object in Data field.
+func DefaultPagedJSONResponseEncoder[T any](ctx context.Context, w http.ResponseWriter, response api.PagedData[T]) error {
+	w.Header().Set(HeaderContentType, HttpContentTypeJson)
+	reqID, _ := ReqIDFromContext(ctx)
+
+	payload := api.SuccessResponse(reqID, response.Data, response.Pagination)
+	var gw io.Writer = w
+	if needGzipped(ctx) {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		gw = gz
 	}
 
-	w.Header().Set(gohttp.HeaderContentType, fileres.ContentType)
-	w.Header().Set(gohttp.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", fileres.Filename))
+	return json.NewEncoder(gw).Encode(payload)
+}
+
+func CommonFileResponseEncoder[T FileResponse](ctx context.Context, w http.ResponseWriter, response *FileResponse) error {
+	// fileres, ok := response.(*FileResponse)
+	// if !ok {
+	// 	return fmt.Errorf("response object is not of type *FileResponse")
+	// }
+
+	fileres := response
+
+	w.Header().Set(HeaderContentType, fileres.ContentType)
+	w.Header().Set(HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", fileres.Filename))
 	w.WriteHeader(200)
 
 	if _, err := io.Copy(w, fileres.Content); err != nil {
@@ -400,7 +554,7 @@ type requestDecoderOption struct {
 }
 
 func getAcceptFromContext(ctx context.Context) string {
-	val := ctx.Value(api.ContextKeyRequestAccept)
+	val := ctx.Value(ContextKeyRequestAccept)
 	enc, ok := val.(string)
 	if ok {
 		encodings := strings.Split(strings.ToLower(enc), ",")
@@ -411,7 +565,7 @@ func getAcceptFromContext(ctx context.Context) string {
 }
 
 func needGzipped(ctx context.Context) bool {
-	val := ctx.Value(api.ContextKeyRequestAcceptEncoding)
+	val := ctx.Value(ContextKeyRequestAcceptEncoding)
 	enc, ok := val.(string)
 	var gzipped = false
 	if ok {

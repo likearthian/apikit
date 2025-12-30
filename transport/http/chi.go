@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/likearthian/apikit/api"
 )
 
 func ChiURLParamIntoContext(ctx context.Context, r *http.Request) context.Context {
@@ -20,5 +19,5 @@ func ChiURLParamIntoContext(ctx context.Context, r *http.Request) context.Contex
 		}
 	}
 
-	return context.WithValue(ctx, api.ContextKeyURLParams, params)
+	return context.WithValue(ctx, ContextKeyURLParams, params)
 }

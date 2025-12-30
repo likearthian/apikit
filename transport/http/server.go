@@ -109,8 +109,8 @@ func (s Server[I, O]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(s.finalizer) > 0 {
 		iw := &interceptingWriter{w, http.StatusOK, 0}
 		defer func() {
-			ctx = context.WithValue(ctx, api.ContextKeyResponseHeaders, iw.Header())
-			ctx = context.WithValue(ctx, api.ContextKeyResponseSize, iw.written)
+			ctx = context.WithValue(ctx, ContextKeyResponseHeaders, iw.Header())
+			ctx = context.WithValue(ctx, ContextKeyResponseSize, iw.written)
 			for _, f := range s.finalizer {
 				f(ctx, iw.code, r)
 			}

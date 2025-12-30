@@ -1,4 +1,4 @@
-package apikit
+package api
 
 import (
 	"errors"

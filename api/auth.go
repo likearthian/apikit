@@ -10,48 +10,45 @@ import (
 	"github.com/dgrijalva/jwt-go/v4"
 )
 
-var (
-	// ErrTokenContextMissing denotes a token was not passed into the parsing
-	// middleware's context.
-	ErrTokenContextMissing = fmt.Errorf("token up for parsing was not passed through the context")
-
-	// ErrTokenInvalid denotes a token was not able to be validated.
-	ErrTokenInvalid = fmt.Errorf("JWT Token was invalid")
-
-	// ErrTokenExpired denotes a token's expire header (exp) has since passed.
-	ErrTokenExpired = fmt.Errorf("JWT Token is expired")
-
-	// ErrTokenMalformed denotes a token was not formatted as a JWT token.
-	ErrTokenMalformed = fmt.Errorf("JWT Token is malformed")
-
-	// ErrTokenNotActive denotes a token's not before header (nbf) is in the
-	// future.
-	ErrTokenNotActive = fmt.Errorf("token is not valid yet")
-
-	// ErrUnexpectedSigningMethod denotes a token was signed with an unexpected
-	// signing method.
-	ErrUnexpectedSigningMethod = fmt.Errorf("unexpected signing method")
-)
-
 var jwtSigningMethod = jwt.SigningMethodHS256
 
+type AuthClaims struct {
+	jwt.StandardClaims
+	Username string         `json:"username"`
+	IsAdmin  bool           `json:"is_admin"`
+	Meta     map[string]any `json:"meta"`
+}
+
 type jwtOption struct {
-	keyFunc       jwt.Keyfunc
-	claimFactory  ClaimsFactory
-	parserOptions []jwt.ParserOption
+	ClaimFactory     ClaimsFactory
+	JwtSigningMethod jwt.SigningMethod
+	ParserOptions    []jwt.ParserOption
+}
+
+func DefaultJwtOptions() *jwtOption {
+	return &jwtOption{
+		ClaimFactory:  StandardClaimsFactory,
+		ParserOptions: []jwt.ParserOption{},
+	}
 }
 
 type JwtOption func(*jwtOption)
 
 func WithAudience(aud string) JwtOption {
 	return func(opt *jwtOption) {
-		opt.parserOptions = append(opt.parserOptions, jwt.WithAudience(aud))
+		opt.ParserOptions = append(opt.ParserOptions, jwt.WithAudience(aud))
 	}
 }
 
-func WithKeyGetter(keyGetter jwt.Keyfunc) JwtOption {
+func WithClaimsFactory(claimFactory ClaimsFactory) JwtOption {
 	return func(opt *jwtOption) {
-		opt.keyFunc = keyGetter
+		opt.ClaimFactory = claimFactory
+	}
+}
+
+func WithJwtSigningMethod(method jwt.SigningMethod) JwtOption {
+	return func(opt *jwtOption) {
+		opt.JwtSigningMethod = method
 	}
 }
 
@@ -68,7 +65,13 @@ func MapClaimsFactory() jwt.Claims {
 // StandardClaimsFactory is a ClaimsFactory that returns
 // an empty jwt.StandardClaims.
 func StandardClaimsFactory() jwt.Claims {
-	return &jwt.StandardClaims{}
+	return &AuthClaims{}
+}
+
+func MakeClaimsFactory[T jwt.Claims](fn func() T) ClaimsFactory {
+	return func() jwt.Claims {
+		return fn()
+	}
 }
 
 // CreateToken creates a JWT token with the given claimFactory and keys.
@@ -88,6 +91,7 @@ func CreateToken(claimFactory ClaimsFactory, keys []string) (string, error) {
 	if n < 0 || n > len(keys)-1 {
 		n = 1
 	}
+
 	kid := strconv.Itoa(n)
 	key := []byte(keys[n])
 
@@ -95,25 +99,21 @@ func CreateToken(claimFactory ClaimsFactory, keys []string) (string, error) {
 	return token.SignedString(key)
 }
 
-func JWTMiddleware[I, O any](options ...JwtOption) Middleware[I, O] {
+func JWTMiddleware[I, O any](keyFn jwt.Keyfunc, options ...JwtOption) Middleware[I, O] {
 	return func(next Endpoint[I, O]) Endpoint[I, O] {
-		return WithJWTAuthEPMiddleware(next, options...)
+		return WithJWTAuthEPMiddleware(next, keyFn, options...)
 	}
 }
 
-func WithJWTAuthEPMiddleware[I, O any](ep Endpoint[I, O], options ...JwtOption) Endpoint[I, O] {
+func WithJWTAuthEPMiddleware[I, O any](ep Endpoint[I, O], keyFn jwt.Keyfunc, options ...JwtOption) Endpoint[I, O] {
 	return func(ctx context.Context, request I) (O, error) {
 		opt := jwtOption{}
 		for _, o := range options {
 			o(&opt)
 		}
 
-		if opt.claimFactory == nil {
-			opt.claimFactory = StandardClaimsFactory
-		}
-
-		if opt.keyFunc == nil {
-			opt.keyFunc = DefaultJwtKeyGetterFunc
+		if opt.ClaimFactory == nil {
+			opt.ClaimFactory = StandardClaimsFactory
 		}
 
 		var out O
@@ -129,14 +129,14 @@ func WithJWTAuthEPMiddleware[I, O any](ep Endpoint[I, O], options ...JwtOption) 
 		// of the token to identify which key to use, but the parsed token
 		// (head and claims) is provided to the callback, providing
 		// flexibility.
-		token, err := jwt.ParseWithClaims(tokenString, opt.claimFactory(), func(token *jwt.Token) (interface{}, error) {
+		token, err := jwt.ParseWithClaims(tokenString, opt.ClaimFactory(), func(token *jwt.Token) (interface{}, error) {
 			// Don't forget to validate the alg is what you expect:
 			if token.Method != jwtSigningMethod {
 				return nil, ErrUnexpectedSigningMethod
 			}
 
-			return opt.keyFunc(token)
-		}, opt.parserOptions...)
+			return keyFn(token)
+		}, opt.ParserOptions...)
 
 		if err != nil {
 			switch err.(type) {
@@ -159,16 +159,35 @@ func WithJWTAuthEPMiddleware[I, O any](ep Endpoint[I, O], options ...JwtOption) 
 			return out, ErrTokenInvalid
 		}
 
-		ctx = context.WithValue(ctx, ContextKeyJWTClaims, token.Claims)
+		ctx = context.WithValue(ctx, ContextKeyAuthClaims, token.Claims)
 
 		return ep(ctx, request)
 	}
+}
+
+func ParseJwtError(err error) string {
+	parsed := "not authorized to access this resource"
+	// fmt.Println("jwt error:", err)
+	switch err.(type) {
+	case *jwt.MalformedTokenError:
+		// Token is malformed
+		parsed = ErrTokenMalformed.Error()
+	case *jwt.TokenExpiredError:
+		// Token is expired
+		parsed = ErrTokenExpired.Error()
+	case *jwt.TokenNotValidYetError:
+		// Token is not active yet
+		parsed = ErrTokenNotActive.Error()
+	}
+
+	return parsed
 }
 
 func DefaultJwtKeyGetterFunc(token *jwt.Token) (interface{}, error) {
 	return getKey(token, DefaultKeys)
 }
 
+// CreateJwtKeyGetterFunc creates a jwt.Keyfunc that uses the given keys. the key will be chosen based on the kid in the token header.
 func CreateJwtKeyGetterFunc(keys []string) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		return getKey(token, keys)
@@ -192,19 +211,4 @@ func getKey(token *jwt.Token, keys []string) (any, error) {
 
 var DefaultKeys = []string{
 	"6ai1Vz6dHy9PbLCKUc8QtadUIuOUMuHQ",
-	"rUpWCnIwgvHfEpKJpXknmw5ozfBrpzbz",
-	"bczvJVnrzXk5WHzSTm5GNMQo5nBfHnyK",
-	"PQsc8LdzrV6Mn7Kq71E31N4vRhNpj30q",
-	"W9X0Y1Z2A3B4C5D6E7F8G9H0I1J2K3L4",
-	"M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z8A9B0",
-	"C1D2E3F4G5H6I7J8K9L0M1N2O3P4Q5R6",
-	"S7T8U9V0W1X2Y3Z4A5B6C7D8E9F0G1H2",
-	"I3J4K5L6M7N8O9P0Q1R2S3T4U5V6W7X8",
-	"Y9Z0A1B2C3D4E5F6G7H8I9J0K1L2M3N4",
-	"Z0A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5",
-	"P6Q7R8S9T0U1V2W3X4Y5Z6A7B8C9D0E1",
-	"F2G3H4I5J6K7L8M9N0O1P2Q3R4S5T6U7",
-	"V8W9X0Y1Z2A3B4C5D6E7F8G9H0I1J2K3",
-	"L4M5N6O7P8Q9R0S1T2U3V4W5X6Y7Z8A9",
-	"B0C1D2E3F4G5H6I7J8K9L0M1N2O3P4Q5",
 }
