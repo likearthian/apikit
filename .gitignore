@@ -1,2 +1,13 @@
+# IDE
 .idea/
+
+# Local worktree metadata
 .worktrees/
+
+# Generated artifacts
+graphify-out/
+improvement_plan.html
+
+# Editor
+*.swp
+*.swo

@@ -3,6 +3,8 @@ package apikit
 import (
 	"errors"
 	"net/http"
+
+	"github.com/likearthian/apikit/api"
 )
 
 type BaseResponse struct {
@@ -50,15 +52,15 @@ func SuccessResponse(requestID string, data interface{}, pagination ...Paginatio
 }
 
 func ErrorResponse(requestID string, code int, err error) BaseResponse {
-	if errors.Is(err, ErrBadRequest) {
+	if errors.Is(err, api.ErrBadRequest) {
 		code = 400
 	}
 
-	if errors.Is(err, ErrInvalidUserPassword) {
+	if errors.Is(err, api.ErrInvalidUserPassword) {
 		code = 401
 	}
 
-	if errors.Is(err, ErrKeynotFound) {
+	if errors.Is(err, api.ErrKeynotFound) {
 		code = http.StatusNotFound
 	}
 

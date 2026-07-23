@@ -1,0 +1,48 @@
+package transport
+
+import (
+	"context"
+
+	log "github.com/likearthian/apikit/v2/logger"
+)
+
+// ErrorHandler receives a transport error to be processed for diagnostic purposes.
+// Usually this means logging the error.
+type ErrorHandler interface {
+	Handle(ctx context.Context, err error)
+}
+
+type nopErrorHandler struct{}
+
+// NewNopErrorHandler returns an ErrorHandler that ignores errors.
+func NewNopErrorHandler() ErrorHandler {
+	return nopErrorHandler{}
+}
+
+func (nopErrorHandler) Handle(context.Context, error) {}
+
+// LogErrorHandler is a transport error handler implementation which logs an error.
+type LogErrorHandler struct {
+	logger log.Logger
+}
+
+func NewLogErrorHandler(logger log.Logger) *LogErrorHandler {
+	return &LogErrorHandler{
+		logger: logger,
+	}
+}
+
+func (h *LogErrorHandler) Handle(ctx context.Context, err error) {
+	h.logger.Error("error", "err", err)
+}
+
+// The ErrorHandlerFunc type is an adapter to allow the use of
+// ordinary function as ErrorHandler. If f is a function
+// with the appropriate signature, ErrorHandlerFunc(f) is a
+// ErrorHandler that calls f.
+type ErrorHandlerFunc func(ctx context.Context, err error)
+
+// Handle calls f(ctx, err).
+func (f ErrorHandlerFunc) Handle(ctx context.Context, err error) {
+	f(ctx, err)
+}

@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/likearthian/apikit/api"
-	log "github.com/likearthian/apikit/logger"
+	"github.com/likearthian/apikit/v2/api"
+	log "github.com/likearthian/apikit/v2/logger"
 	"github.com/likearthian/go-http/router"
 )
 
