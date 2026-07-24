@@ -10,6 +10,14 @@ import (
 	"github.com/likearthian/go-http/router"
 )
 
+func WithEndpointLogging[I, O any](logger log.Logger, endPointMethod string, next api.Endpoint[I, O]) api.Endpoint[I, O] {
+	if logger == nil {
+		return next
+	}
+
+	return MakeEndpointLoggingMiddleware[I, O](logger, endPointMethod)(next)
+}
+
 func MakeEndpointLoggingMiddleware[I, O any](logger log.Logger, endPointMethod string) api.Middleware[I, O] {
 	if logger == nil {
 		return nil

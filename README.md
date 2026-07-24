@@ -14,40 +14,45 @@ Import paths:
 
 ---
 
-`apikit` is a small, opinionated Go library for building HTTP services on top of
-[go-kit](https://github.com/go-kit/kit) concepts. It provides generic, type-safe
-endpoint and transport primitives, pluggable logging adapters, JWT auth
-middleware, request/response binding, and helpers for files and paging — all
-with minimal dependencies.
+`apikit` is a small, opinionated Go library for building HTTP services with
+type-safe, go-kit-style endpoints. It provides generic endpoint and middleware
+primitives, HTTP transports with decode/encode, request binding, JWT and API-key
+authentication, structured-logging adapters, and (v2) platform packages for
+observability, health checks, and correlation IDs.
 
 It is heavily inspired by (and adapted from) [`go-kit/kit`](https://github.com/go-kit/kit),
-narrowed down to the pieces the likearthian services actually use.
+narrowed down to the pieces likearthian services actually use.
 
 ## Features
 
 - **Generic endpoints** — `api.Endpoint[I, O]` and chainable `api.Middleware[I, O]`
   let you compose business logic in a type-safe way (Go 1.18+ generics).
-- **HTTP transport** — server-side decode/encode, request/response function
-  hooks, error encoders, finalizers, and an `ErrorEncoder` to translate domain
-  errors into HTTP status codes. Chi-compatible URL params and routing.
+- **HTTP transport** — `NewServer` validates dependencies on construction and
+  supports decode/encode, before/after hooks, error encoders, finalizers, and
+  Chi-compatible URL routing.
 - **Request binding** — `BindURLQuery` / `BindFormData` populate structs (and
-  maps) from `url.Values` using struct tags (`query`, `form`), without pulling
-  in a full web framework.
-- **JWT auth** — HTTP middleware (`MakeHttpJwtMiddleware`) and helpers
-  (`TokenFromHeader`, `TokenFromContext`) built on `dgrijalva/jwt-go/v4`, with
-  configurable signing method, audience and custom claims.
+  maps) from `url.Values` using struct tags (`query`, `form`). Structured
+  `*BindingError` provides field-level failure context.
+- **JWT authentication** — centralized `api.TokenVerifier` for endpoint and
+  middleware use. HTTP middleware supports JWT-only, API-key-only, or combined
+  (JWT-or-API-key) auth, with configurable signing method, audience, and
+  custom claims.
 - **Structured logging** — a single `logger.Logger` interface with adapters for
-  `logrus`, `zerolog`, `apex/log`, and a no-op logger. `MakeEndpointLoggingMiddleware`
+  logrus, zerolog, apex/log, and a no-op logger. `MakeEndpointLoggingMiddleware`
   wires request-id, endpoint name and duration into every endpoint automatically.
 - **Standard responses & DTOs** — `BaseResponse[T]`, `PaginationDTO`,
-  `PagedData[T]`, `ListItem`, and `SuccessResponse`/`PagedResponse` helpers.
+  `PagedData[T]`, and `SuccessResponse`/`ErrorResponse` helpers.
 - **File uploads/downloads** — `FilePayload` / `FileStreamPayload` DTOs and
   stream-decoding support.
+- **Observability** *(v2)* — `MetricsRecorder` interface with a Prometheus
+  implementation (histogram, counter, summary) and server finalizer hooks.
+- **Health checks** *(v2)* — Liveness/readiness HTTP handlers.
+- **Correlation IDs** *(v2)* — Crypto-random ID generation.
 
 ## Installation
 
 ```bash
-go get github.com/likearthian/apikit
+go get github.com/likearthian/apikit/v2
 ```
 
 Requires **Go 1.19+** (generics are used throughout).
@@ -55,53 +60,59 @@ Requires **Go 1.19+** (generics are used throughout).
 ## Package layout
 
 ```
-.
-├── api/                  # core, transport-agnostic primitives
-│   ├── endpoint.go       # Endpoint[I, O], Middleware[I, O], Chain
-│   ├── middleware.go     # Middleware type and composition helpers
-│   ├── auth.go           # JWT claims, options, signing
-│   ├── context.go        # typed context keys (JWT token, claims, apikey)
-│   ├── errs.go           # sentinel errors + Err2code mapping
-│   ├── result.go        #  Result[T] value/error wrapper
-│   └── base.dto.go       # BaseResponse[T], Paging, ListItem DTOs
-├── logger/               # Logger interface + adapters (logrus, zerolog, apex, noop)
+apikit/v2/
+├── api/                          # core, transport-agnostic primitives
+│   ├── endpoint.go               # Endpoint[I, O], Middleware[I, O], Chain
+│   ├── middleware.go             # Middleware type and composition helpers
+│   ├── auth.go                   # JWT claims, CreateToken, endpoint JWT middleware
+│   ├── token_verifier.go         # TokenVerifier — centralized JWT parsing
+│   ├── context.go                # typed context keys (JWT, claims, API key)
+│   ├── errs.go                   # sentinel errors + Err2code mapping
+│   ├── result.go                 # Result[T] value/error wrapper
+│   └── base.dto.go               # BaseResponse[T], PaginationDTO, PagedData[T], ListItem
+├── logger/                       # Logger interface + adapters (logrus, zerolog, apex, noop)
 ├── transport/
-│   ├── error_handler.go  # LogErrorHandler for transport errors
-│   └── http/             # HTTP transport implementation
-│       ├── server.go             # generic Server[I, O] + options
-│       ├── encode_decode.go       # Decode/Encode/Create request funcs
+│   ├── error_handler.go          # ErrorHandler interface, LogErrorHandler, NopErrorHandler
+│   └── http/
+│       ├── server.go             # generic Server[I, O] + options (NewServer returns error)
+│       ├── encode_decode.go      # Decode/Encode funcs, default JSON/paged encoders
 │       ├── request_response_funcs.go
-│       ├── middlewares.go         # JWT auth + CORS-style helpers
+│       ├── middlewares.go         # JWT, API-key, and combined auth middleware
 │       ├── bind.go                # struct/map binding from query/form
-│       ├── file.go                # file/FileStream DTOs
+│       ├── bind_error.go          # BindingError struct
+│       ├── chi.go                 # Chi URL params into context
 │       ├── context.go             # request-context populating funcs
-│       ├── chi.go                # Chi URL params into context
+│       ├── file.go                # File/FileStream DTOs and uploaders
 │       └── const.go              # HTTP header constant names
-├── logging.go             # MakeEndpointLoggingMiddleware
-└── response.go            # legacy BaseResponse / ResponseType map
+├── platform/
+│   ├── correlation/
+│   │   └── id.go                 # NewID — crypto-random correlation ID
+│   ├── health/
+│   │   └── health.go             # LivenessHandler / ReadinessHandler
+│   └── observability/
+│       ├── metrics.go            # MetricsRecorder interface, StartTimer, ServerFinalizer
+│       └── prometheus/
+│           └── prometheus.go     # Prometheus histogram, counter, summary
+├── logging.go                    # MakeEndpointLoggingMiddleware
+└── example_test.go               # Runnable example
 ```
 
 ## Quick start
-
-A minimal service exposes an `api.Endpoint[I, O]` and wires it to an HTTP
-transport server with a decoder, encoder, and logging middleware:
 
 ```go
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"log"
 	"net/http"
 
-	"github.com/likearthian/apikit"
-	"github.com/likearthian/apikit/api"
-	apitransport "github.com/likearthian/apikit/transport/http"
-	log "github.com/likearthian/apikit/logger"
+	"github.com/likearthian/apikit/v2"
+	"github.com/likearthian/apikit/v2/api"
+	httptransport "github.com/likearthian/apikit/v2/transport/http"
+	"github.com/likearthian/apikit/v2/logger"
 )
 
-// Request / response DTOs.
 type greetRequest struct {
 	Name string `query:"name" json:"name"`
 }
@@ -110,38 +121,34 @@ type greetResponse struct {
 	Message string `json:"message"`
 }
 
-// Business logic as an Endpoint.
 func greet(_ context.Context, req greetRequest) (greetResponse, error) {
 	if req.Name == "" {
-		return greetResponse{}, errors.New("name is required")
+		return greetResponse{}, api.ErrBadRequest
 	}
 	return greetResponse{Message: "hello, " + req.Name}, nil
 }
 
 func main() {
-	logger := log.NewNoopLogger() // swap for zerolog/logrus/apex in production
+	logger := logger.NewNoopLogger() // swap for zerolog/logrus/apex in production
 
-	// Compose middleware: logging wraps the business endpoint.
 	endpoint := apikit.MakeEndpointLoggingMiddleware[greetRequest, greetResponse](
 		logger, "Greet",
 	)(greet)
 
-	server := apitransport.NewServer(
+	server, err := httptransport.NewServer(
 		endpoint,
-		// decode incoming request (query + JSON body supported via BindURLQuery)
 		func(_ context.Context, r *http.Request) (greetRequest, error) {
 			var req greetRequest
-			if err := apitransport.BindURLQuery(&req, r.URL.Query()); err != nil {
+			if err := httptransport.BindURLQuery(&req, r.URL.Query()); err != nil {
 				return req, err
 			}
 			return req, nil
 		},
-		// encode the response as JSON
-		func(_ context.Context, w http.ResponseWriter, resp greetResponse) error {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			return json.NewEncoder(w).Encode(api.SuccessResponse("", resp))
-		},
+		httptransport.DefaultJSONResponseEncoder[greetResponse],
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	http.Handle("/greet", server)
 	_ = http.ListenAndServe(":8080", nil)
@@ -157,40 +164,109 @@ curl 'http://localhost:8080/greet?name=world'
 
 ### Auth
 
-Protect a handler with JWT using the HTTP JWT middleware:
-
 ```go
-auth := apitransport.MakeHttpJwtMiddleware(func(t *jwt.Token) (interface{}, error) {
-	return []byte("my-secret"), nil
-}, api.WithAudience("my-service"))
+keyFn := func(_ *jwt.Token) (any, error) {
+	return []byte("replace-with-a-secret"), nil
+}
+
+// JWT middleware
+auth := httptransport.MakeHTTPJWTMiddleware(keyFn, api.WithAudience("my-service"))
+
+// API-key middleware
+apiKeyAuth := httptransport.MakeHTTPAPIKeyMiddleware(func(ctx context.Context, key string) (jwt.Claims, error) {
+	if key == "expected-key" {
+		return &api.AuthClaims{Username: "service-account"}, nil
+	}
+	return nil, api.ErrUnauthorized
+})
+
+// Combined: JWT or API-key
+either := httptransport.MakeHTTPJWTOrAPIKeyMiddleware(keyFn, validateAPIKey, api.WithAudience("my-service"))
 
 r.With(auth).Get("/secret", protectedHandler)
 ```
 
-Claims (`api.AuthClaims`) are placed in the request context under
-`api.ContextKeyAuthClaims`; the raw token under `api.ContextKeyJWTToken`. Use
-the typed helpers in `api/context.go` to retrieve them.
+Claims are stored at `api.ContextKeyAuthClaims`; the raw JWT at `api.ContextKeyJWTToken`;
+the API key at `api.ContextKeyAPIKey`. Use `api.GetAPIKeyFromContext(ctx)` to retrieve it.
 
 ### Logging
 
-Pick any adapter — they all implement `logger.Logger`:
-
 ```go
-log.NewZerolog(zerolog.New(os.Stdout))   // zerolog
-log.NewRusLog(logrus.New())              // logrus
-log.NewApexLogger(...)                    // apex/log
-log.NewNoopLogger()                       // discard everything
+logger.NewZerolog(zerolog.New(os.Stdout))   // zerolog
+logger.NewRusLog(logrus.New())              // logrus
+logger.NewApexLogger(...)                   // apex/log
+logger.NewNoopLogger()                      // discard everything
 ```
 
-`MakeEndpointLoggingMiddleware` logs request id, endpoint name, duration, and
-error code on every call.
+### Paged responses
+
+```go
+endpoint := func(ctx context.Context, req listRequest) (api.PagedData[[]user], error) {
+	return api.PagedData[[]user]{
+		Data:       users,
+		Pagination: api.PaginationDTO{Page: 1, Total: 42},
+	}, nil
+}
+
+server, err := httptransport.NewServer(
+	endpoint,
+	decodeListRequest,
+	httptransport.DefaultPagedJSONResponseEncoder[[]user],
+)
+```
+
+### Request binding
+
+```go
+var input struct {
+	Page   uint     `query:"page"`
+	Labels []string `query:"label"`
+}
+if err := httptransport.BindURLQuery(&input, r.URL.Query()); err != nil {
+	var bindingErr *httptransport.BindingError
+	if errors.As(err, &bindingErr) {
+		log.Printf("invalid %s=%q: %v", bindingErr.Field, bindingErr.Value, bindingErr.Err)
+	}
+}
+```
+
+### Health checks (v2)
+
+```go
+health := health.State{}
+health.SetReady(true)
+
+mux := chi.NewRouter()
+mux.Get("/healthz", health.LivenessHandler)
+mux.Get("/readyz", health.ReadinessHandler)
+```
+
+### Observability (v2)
+
+```go
+metrics := prometheus.NewMetrics("myapp", prometheus.LowCardinalityHistogramBuckets)
+mux.Handle("/metrics", prometheus.Handler(registry))
+
+server, err := httptransport.NewServer(
+	endpoint, decoder, encoder,
+	httptransport.ServerBefore(observability.StartTimer),
+	httptransport.ServerFinalizer(observability.ServerFinalizer(metrics)),
+)
+```
 
 ## Error handling
 
-`api.Err2code(err)` maps common sentinel errors (defined in `api/errs.go`) to
-HTTP status codes. The HTTP `Server` uses `DefaultErrorEncoder` to write those
-back; supply your own `ErrorEncoder` via `ServerWithErrorEncoder` for custom
-behavior. Transport errors may also be routed to a `LogErrorHandler`.
+`api.Err2code(err)` maps sentinel errors (defined in `api/errs.go`) to HTTP status
+codes. The HTTP `Server` uses `DefaultErrorEncoder` to write those back; supply
+your own `ErrorEncoder` via `ServerErrorEncoder` for custom behavior.
+
+```go
+server, err := httptransport.NewServer(
+	endpoint, decoder, encoder,
+	httptransport.ServerErrorEncoder(encodeError),
+	httptransport.ServerErrorHandler(transport.NewLogErrorHandler(logger)),
+)
+```
 
 ## Status
 
